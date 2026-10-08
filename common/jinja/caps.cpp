@@ -32,12 +32,6 @@ void caps_apply_reasoning_effort(jinja::context & ctx, const std::string & effor
     ctx.set_val("reasoning_strength", var);
 }
 
-void caps_apply_reasoning_effort(jinja::context & ctx, const std::string & effort) {
-    value var = mk_val<value_string>(effort); // bind to the same value for stats
-    ctx.set_val("reasoning_effort",   var);
-    ctx.set_val("reasoning_strength", var);
-}
-
 static void caps_try_execute(jinja::program & prog,
                              const caps_json_fn & messages_fn,
                              const caps_ctx_fn & ctx_fn,
@@ -159,7 +153,7 @@ caps caps_get(jinja::program & prog) {
         },
         nullptr, // ctx_fn
         nullptr, // tools_fn
-        [&](context &, bool success, value & messages, value &, const std::string &) {
+        [&](context &, bool success, value & messages, value &, const std::string & rendered) {
             auto & content = messages->at(0)->at("content");
             caps_print_stats(content, "messages[0].content");
             if (has_op(content, "test_is_string")) {

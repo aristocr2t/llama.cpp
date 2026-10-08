@@ -1263,6 +1263,10 @@ const char * const LLM_FFN_EXPS_REGEX = "\\.ffn_(up|down|gate|gate_up)_(ch|)exps
 
 const char * const LLM_FFN_DENSE_REGEX = "\\.ffn_(up|down|gate)\\.";
 
+inline std::string llm_ffn_exps_block_regex(int idx) {
+    return string_format("blk\\.%d%s", idx, LLM_FFN_EXPS_REGEX);
+}
+
 inline std::string llm_ffn_block_regex(int idx, const char * ffn_regex) {
     return string_format("blk\\.%d%s", idx, ffn_regex);
 }
