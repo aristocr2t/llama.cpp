@@ -86,6 +86,22 @@ using llama_memory_breakdown = std::map<ggml_backend_buffer_type_t, llama_memory
 LLAMA_API int32_t llama_model_n_expert (const struct llama_model * model);
 LLAMA_API int32_t llama_model_n_devices(const struct llama_model * model);
 
+struct llama_moe_tensor_info {
+    enum ggml_type type;
+    size_t expert_size;
+    int64_t n_input;
+    int64_t n_output;
+    int64_t n_expert;
+    // Transformer block index parsed from the tensor name ("blk.<N>..."),
+    // or -1 when the layer cannot be determined.
+    int64_t layer;
+};
+
+LLAMA_API size_t llama_model_get_moe_tensor_info(
+        const struct llama_model * model,
+        struct llama_moe_tensor_info * info,
+        size_t capacity);
+
 LLAMA_API ggml_backend_dev_t llama_model_get_device(const struct llama_model * model, int i);
 
 LLAMA_API llama_memory_breakdown llama_get_memory_breakdown(const struct llama_context * ctx);
@@ -113,6 +129,19 @@ enum llama_decision_order {
 };
 // The embeddings output has one value per entry: row i is the score of option i
 LLAMA_API bool llama_batch_ext_set_decision_order(struct llama_batch_ext * batch, int32_t idx, enum llama_decision_order order);
+LLAMA_API bool llama_model_supports_mtp_chain(const struct llama_model * model);
+
+// True only for architectures whose "draft" is a same-position early-exit of the
+// target's own trunk (gemma4-assistant), where every drafted token in a round shares
+// llama_pos n_past. A dedicated trained NextN/MTP head (qwen35, qwen4exp, deepseek, ...)
+// still needs an incrementing position per draft step even when it shares KV memory
+// with the target (no separate -md model given).
+LLAMA_API bool llama_model_uses_shared_position_draft(const struct llama_model * model);
+
+// Run the DECODER_MTP graph in chained mode: the batch's first row carries the
+// real (token, h) inputs and each following row's inputs come from the previous
+// row's in-graph argmax and hidden state. One decode drafts n_tokens tokens.
+LLAMA_API void llama_set_mtp_chain(struct llama_context * ctx, bool value);
 
 // mirrors:
 // LLAMA_API float * llama_get_embeddings(struct llama_context * ctx);

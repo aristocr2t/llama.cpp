@@ -176,6 +176,7 @@ enum common_speculative_type {
     COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE,  // standalone draft model speculative decoding
     COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3,  // Eagle3 speculative decoding
     COMMON_SPECULATIVE_TYPE_DRAFT_MTP,     // Multi-token prediction
+    COMMON_SPECULATIVE_TYPE_DRAFT_MTP_ADAPTIVE, // MTP with adaptive draft depth
     COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH,  // DFlash speculative decoding
     COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK,  // DSpark speculative decoding (DFlash + Markov head)
     COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE,  // simple self-speculative decoding based on n-grams
@@ -328,10 +329,12 @@ struct common_params_model {
 struct common_params_speculative_draft {
     int32_t n_max = 3; // maximum number of tokens to draft during speculative decoding
     int32_t n_min = 0; // minimum number of draft tokens to use for speculative decoding
+    int32_t n_min_adaptive = 3; // minimum adaptive MTP draft depth (also the starting depth)
 
     float p_split = 0.1f; // speculative decoding split probability
     float p_min   = 0.0f; // minimum speculative decoding probability (greedy)
 
+    bool chain = false; // chained drafting: all n_max tokens in one GPU decode (MTP only)
     bool backend_sampling = true; // offload draft sampling to the backend (default: on)
 
     bool probabilistic = false; // sample the draft and verify by rejection, instead of argmax and match
@@ -352,6 +355,12 @@ struct common_params_speculative_draft {
     std::vector<ggml_backend_dev_t> devices; // devices to use for offloading
 
     std::vector<llama_model_tensor_buft_override> tensor_buft_overrides;
+
+    bool    eagle3                = false; // use EAGLE3 speculative decoding
+    bool    dflash                = false; // use DFlash speculative decoding
+    bool    dflash_defer_injection = true;  // defer encoder KV injection to draft time (set false for higher acceptance on some models)
+    int32_t n_ctx                 = 0;     // draft context size
+
 };
 
 struct common_params_speculative_ngram_mod {
@@ -398,7 +407,9 @@ struct common_params_speculative {
 
     uint32_t need_n_rs_seq() const {
         bool needs_rs_seq = std::any_of(types.begin(), types.end(), [&](auto t) {
-            return t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP || t == COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3 || t == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH || t == COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK;
+            return t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP ||
+                   t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP_ADAPTIVE ||
+                   t == COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3 || t == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH || t == COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK;
         });
 
         return needs_rs_seq ? draft.n_max : 0u;
@@ -450,6 +461,20 @@ struct lr_opt {
 
 struct ggml_opt_optimizer_params common_opt_lr_pars(void * userdata);
 
+enum common_moe_cache_mode {
+    COMMON_MOE_CACHE_MODE_OFF,
+    COMMON_MOE_CACHE_MODE_AUTO,
+    COMMON_MOE_CACHE_MODE_ON,
+    COMMON_MOE_CACHE_MODE_SOFT,
+};
+
+struct common_moe_cache_params {
+    common_moe_cache_mode mode = COMMON_MOE_CACHE_MODE_AUTO;
+    size_t budget_mib          = 0;
+    bool mode_explicit         = false;
+    bool fit_selected          = false;
+};
+
 struct common_params {
     int32_t n_predict             =    -1; // max. number of new tokens to predict, -1 == no limit
     int32_t n_ctx                 =     0; // context size, 0 == context the model was trained with
@@ -458,9 +483,11 @@ struct common_params {
     int32_t n_keep                =     0; // number of tokens to keep from initial prompt
     int32_t n_chunks              =    -1; // max number of chunks to process (-1 = unlimited)
     int32_t n_parallel            =     1; // number of parallel sequences to decode
+    bool    n_parallel_explicit   = false; // true if -np/--parallel was passed on the command line
     int32_t n_sequences           =     1; // number of sequences to decode
     int32_t n_outputs_max         =     0; // max outputs in a batch (0 = n_batch)
     int32_t n_outputs_max_per_seq =     1; // max outputs per sequence
+    bool    gdn_replay            = false; // DRC: ingredient-replay rollback for GDN models instead of full K-snapshots [EXPERIMENTAL]
     int32_t grp_attn_n            =     1; // group-attention factor
     int32_t grp_attn_w            =   512; // group-attention width
     int32_t n_print               =    -1; // print token count every n tokens (-1 = disabled)
@@ -585,6 +612,7 @@ struct common_params {
     bool check_tensors     = false; // validate tensor data
     bool no_op_offload     = false; // globally disable offload host tensor operations to device
     bool no_extra_bufts    = false; // disable extra buffer types (used for weight repacking)
+    common_moe_cache_params moe_cache;
     bool no_host           = false; // bypass host buffer allowing extra buffers to be used
     bool load_mtp          = false; // load MTP/NextN layers
 
@@ -592,6 +620,7 @@ struct common_params {
 
     ggml_type cache_type_k = GGML_TYPE_F16; // KV cache data type for the K
     ggml_type cache_type_v = GGML_TYPE_F16; // KV cache data type for the V
+    uint32_t kv_stream_arena_mib = 0;        // shared CUDA KV + compute arena, 0 = disabled [EXPERIMENTAL]
 
     size_t moe_cache_size = 0; // GPU cache size in bytes for the MoE experts kept in the CPU, split among the GPUs like the layers
 
@@ -700,7 +729,9 @@ struct common_params {
     std::string slot_save_path;
     std::string media_path; // path to directory for loading media files
 
-    float slot_prompt_similarity = 0.1f;
+    float   slot_prompt_similarity        = 0.1f;
+    float   slot_cache_key_similarity     = 0.5f;
+    int32_t slot_cache_key_min_prefix     = 32;
 
     // batched-bench params
     bool is_pp_shared   = false;
@@ -998,6 +1029,8 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
 
 struct llama_model_params   common_model_params_to_llama  (      common_params & params);
 struct llama_context_params common_context_params_to_llama(const common_params & params);
+
+bool common_params_should_fit_device_memory(const common_params & params);
 
 // clear LoRA adapters from context, then apply new list of adapters
 void common_set_adapter_lora(struct llama_context * ctx, std::vector<common_adapter_lora_info> & lora);
