@@ -213,6 +213,8 @@ struct tensor_metadata {
 // dequantization
 //
 
+// dequantizes [first_elem, first_elem + nelements) of the tensor into output[0, nelements)
+// first_elem must be a multiple of the source block size, which holds for any whole-row range
 static void llama_tensor_dequantize_impl(
     ggml_type type, const void * data, float * f32_output, std::vector<std::thread> & workers,
     const size_t nelements, const int nthread
@@ -250,7 +252,24 @@ static void llama_tensor_dequantize_impl(
 
     size_t block_size_bytes = ggml_type_size(type);
 
+    GGML_ASSERT(first_elem % block_size == 0);
     GGML_ASSERT(nelements % block_size == 0);
+
+    uint8_t * f32_input = (uint8_t *) tensor->data + (first_elem / block_size) * block_size_bytes;
+
+    if (nthread < 2) {
+        if (tensor->type == GGML_TYPE_F16) {
+            ggml_fp16_to_fp32_row((ggml_fp16_t *)f32_input, f32_output, nelements);
+        } else if (tensor->type == GGML_TYPE_BF16) {
+            ggml_bf16_to_fp32_row((ggml_bf16_t *)f32_input, f32_output, nelements);
+        } else if (ggml_is_quantized(tensor->type)) {
+            qtype->to_float(f32_input, f32_output, nelements);
+        } else {
+            GGML_ABORT("fatal error"); // unreachable
+        }
+        return;
+    }
+
     size_t nblocks = nelements / block_size;
     size_t blocks_per_thread = nblocks / nthread;
     size_t spare_blocks = nblocks - (blocks_per_thread * nthread); // if blocks aren't divisible by thread count
@@ -324,6 +343,17 @@ static bool tensor_allows_quantization(const llama_model_quantize_params * param
     quantize &= name.find("ssm_conv1d") == std::string::npos;
     quantize &= name.find("shortconv.conv.weight") == std::string::npos;
 
+    // do not quantize Qwen4-Exp's state-space gains or its n-gram conv kernel. They are small and
+    // structural rather than arithmetic: the gains set the decay of the recurrence. A 3 to 4 bit
+    // copy of a tensor in this class leaves a model that loads, runs at full speed and answers
+    // every prompt with the same text, because its input never reaches the residual. ple_conv1d
+    // has a 4-element row, which no block-quantized type can represent, so there is no floor to
+    // set for it in any case. The hyper-connection injection matrices are the same class but do
+    // carry 8 bits, so they get a floor in llama_tensor_get_type instead of being excluded here.
+    quantize &= name.find("ssm_alpha.weight")  == std::string::npos;
+    quantize &= name.find("ssm_beta.weight")   == std::string::npos;
+    quantize &= name.find("ple_conv1d.weight") == std::string::npos;
+
     // do not quantize MiniMax's indexer projection weights, they are tiny
     quantize &= name.find("indexer.k_proj.weight") == std::string::npos;
     quantize &= name.find("indexer.q_proj.weight") == std::string::npos;
@@ -392,6 +422,24 @@ static ggml_type tensor_type_fallback(quantize_state_impl & qs, const ggml_tenso
 
     const int64_t ncols = t->ne[0];
     const int64_t qk_k = ggml_blck_size(target_type);
+
+    // CR types rotate activations in groups of 256 at runtime.
+    static constexpr int64_t q8_cr_group_size = 256;
+    if ((return_type == GGML_TYPE_Q8_CR || return_type == GGML_TYPE_Q5_CR || return_type == GGML_TYPE_Q6_CR) &&
+            (t->ne[2] != 1 || t->ne[3] != 1 || ncols % q8_cr_group_size != 0)) {
+        LLAMA_LOG_WARN("warning: %-36s - cannot use %s (needs 2D tensor with ncols %% %3d == 0) ",
+                       t->name, ggml_type_name(return_type), (int) q8_cr_group_size);
+        ++qs.n_fallback;
+        return_type = (return_type == GGML_TYPE_Q8_CR) ? GGML_TYPE_Q8_0 :
+                      (return_type == GGML_TYPE_Q5_CR) ? GGML_TYPE_Q5_0 :
+                      (return_type == GGML_TYPE_Q6_CR) ? GGML_TYPE_Q6_K : GGML_TYPE_Q8_0;
+        if (ncols % ggml_blck_size(return_type) != 0) {
+            LLAMA_LOG_WARN("(WARNING: must use F16 due to unusual shape) ");
+            return_type = GGML_TYPE_F16;
+        }
+        LLAMA_LOG_WARN("-> falling back to %7s\n", ggml_type_name(return_type));
+        return return_type;
+    }
 
     if (ncols % qk_k != 0) { // this tensor's shape is incompatible with this quant
         LLAMA_LOG_WARN("warning: %-36s - ncols %6" PRId64 " not divisible by %3" PRId64 " (required for type %7s) ",
@@ -505,7 +553,8 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
                      ftype == LLAMA_FTYPE_MOSTLY_IQ1_M) {
                 new_type = GGML_TYPE_Q5_K;
             }
-            else if (new_type != GGML_TYPE_Q8_0) {
+            else if (new_type != GGML_TYPE_Q8_0 && new_type != GGML_TYPE_Q8_CR &&
+                     new_type != GGML_TYPE_Q5_CR && new_type != GGML_TYPE_Q6_CR) {
                 new_type = GGML_TYPE_Q6_K;
             }
         }
@@ -538,6 +587,16 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
             }
             else if (ftype == LLAMA_FTYPE_MOSTLY_TQ1_0 || ftype == LLAMA_FTYPE_MOSTLY_TQ2_0 || ftype == LLAMA_FTYPE_MOSTLY_Q2_0) {
                 new_type = GGML_TYPE_Q4_K;
+            }
+            else if (ftype == LLAMA_FTYPE_MOSTLY_Q8_CR) {
+                // token embeddings are read with get_rows, not mul_mat, so they cannot be rotated
+                new_type = GGML_TYPE_Q8_0;
+            }
+            else if (ftype == LLAMA_FTYPE_MOSTLY_Q5_CR) {
+                new_type = GGML_TYPE_Q5_0;
+            }
+            else if (ftype == LLAMA_FTYPE_MOSTLY_Q6_CR) {
+                new_type = GGML_TYPE_Q6_K;
             }
         }
     } else if (ftype == LLAMA_FTYPE_MOSTLY_IQ2_XXS || ftype == LLAMA_FTYPE_MOSTLY_IQ2_XS || ftype == LLAMA_FTYPE_MOSTLY_IQ1_S ||
@@ -765,6 +824,24 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, const llama_mod
             new_type = llama_tensor_get_type_impl(qs, new_type, tensor, params->ftype, tm.category);
         }
 
+        // Qwen4-Exp's hyper-connection injection matrices decide how the token embedding enters
+        // each layer. At 3 to 4 bits the model answers every prompt with the same text, because
+        // its input never reaches the residual. Eight bits measures clean: the published MTP head
+        // carries both at Q8_0 and drafts at 86% acceptance. So set a floor rather than refusing
+        // to quantize them at all. The shape fallback below still corrects the type if the row
+        // cannot hold it.
+        {
+            const std::string tname(tensor->name);
+            if (tname.find("hc_attn_inject.weight") != std::string::npos ||
+                tname.find("hc_ffn_inject.weight")  != std::string::npos) {
+                const int64_t blck = ggml_blck_size(new_type);
+                const float   bpw  = blck > 0 ? 8.0f * ggml_type_size(new_type) / blck : 32.0f;
+                if (bpw < 8.0f) {
+                    new_type = GGML_TYPE_Q8_0;
+                }
+            }
+        }
+
         // incompatible tensor shapes are handled here - fallback to a compatible type
         new_type = tensor_type_fallback(qs, tensor, new_type);
     }
@@ -885,6 +962,9 @@ ggml_type llama_ftype_get_default_type(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_Q5_0: return GGML_TYPE_Q5_0;
         case LLAMA_FTYPE_MOSTLY_Q5_1: return GGML_TYPE_Q5_1;
         case LLAMA_FTYPE_MOSTLY_Q8_0: return GGML_TYPE_Q8_0;
+        case LLAMA_FTYPE_MOSTLY_Q8_CR: return GGML_TYPE_Q8_CR;
+        case LLAMA_FTYPE_MOSTLY_Q5_CR: return GGML_TYPE_Q5_CR;
+        case LLAMA_FTYPE_MOSTLY_Q6_CR: return GGML_TYPE_Q6_CR;
         case LLAMA_FTYPE_MOSTLY_F16:  return GGML_TYPE_F16;
         case LLAMA_FTYPE_MOSTLY_BF16: return GGML_TYPE_BF16;
         case LLAMA_FTYPE_ALL_F32:     return GGML_TYPE_F32;
@@ -907,6 +987,8 @@ ggml_type llama_ftype_get_default_type(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_Q6_K:    return GGML_TYPE_Q6_K;
         case LLAMA_FTYPE_MOSTLY_TQ1_0:   return GGML_TYPE_TQ1_0;
         case LLAMA_FTYPE_MOSTLY_TQ2_0:   return GGML_TYPE_TQ2_0;
+        case LLAMA_FTYPE_MOSTLY_TQ3_1S:  return GGML_TYPE_TQ3_1S;
+        case LLAMA_FTYPE_MOSTLY_TQ4_1S:  return GGML_TYPE_TQ4_1S;
         case LLAMA_FTYPE_MOSTLY_IQ2_XXS: return GGML_TYPE_IQ2_XXS;
         case LLAMA_FTYPE_MOSTLY_IQ2_XS:  return GGML_TYPE_IQ2_XS;
         case LLAMA_FTYPE_MOSTLY_IQ2_S:   return GGML_TYPE_IQ2_XS;
