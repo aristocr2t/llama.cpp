@@ -946,6 +946,7 @@ static int llama_graph_n_input_tensors(ggml_cgraph * gf) {
     }
 
     return (int) users.size();
+}
 
 static bool llama_model_has_cacheable_moe_weights(const llama_model &                 model,
                                                   llama_moe_cache_mode                mode,
@@ -2635,7 +2636,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     const auto & hparams = model.hparams;
 
     const int64_t n_vocab  = vocab.n_tokens();
-    const bool    mtp_embd = cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP && batch_inp.embd;
+    const bool    mtp_embd = cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP && !batch_inp.embd.empty();
     const int64_t n_embd   = mtp_embd ? hparams.n_embd_out() : hparams.n_embd_inp();
 
     // when computing embeddings, all tokens are output

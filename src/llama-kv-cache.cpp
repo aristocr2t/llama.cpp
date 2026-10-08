@@ -766,8 +766,8 @@ llama_kv_cache::llama_kv_cache(
 
         // Default: rotation OFF on both sides (safe across all tested model families).
         // Override per side via env vars below.
-        attn_rot_k = false;
-        attn_rot_v = false;
+        bool attn_rot_k = false;
+        bool attn_rot_v = false;
 
         // Per-side overrides. Set LLAMA_ATTN_ROT_K_OVERRIDE=1 / LLAMA_ATTN_ROT_V_OVERRIDE=1
         // to enable rotation. The cache type and head-dim alignment guards below
@@ -788,24 +788,13 @@ llama_kv_cache::llama_kv_cache(
                 hparams.n_embd_head_v() % 64 == 0;
         }
 
-        bool attn_rot_k =
-            !attn_rot_disable &&
-            n_embd_head_k_all > 0 &&
-            ggml_is_quantized(type_k) &&
-            hparams.n_embd_head_k() % 64 == 0;
-
         // always create Hadamard rotation tensors for DeepSeek lightning indexers
-        if ((model.arch == LLM_ARCH_DEEPSEEK32 || model.arch == LLM_ARCH_DEEPSEEK4 ||
+        if (!attn_rot_disable &&
+                (model.arch == LLM_ARCH_DEEPSEEK32 || model.arch == LLM_ARCH_DEEPSEEK4 ||
                 model.arch == LLM_ARCH_GLM_DSA || model.arch == LLM_ARCH_DOTS3NOTE) &&
                 hparams.n_embd_head_k_full == hparams.indexer_head_size) {
             attn_rot_k = true;
         }
-
-        const bool attn_rot_v =
-            !attn_rot_disable &&
-            n_embd_head_v_all > 0 &&
-            ggml_is_quantized(type_v) &&
-            hparams.n_embd_head_v() % 64 == 0;
 
         if (attn_rot_k) {
             n_rot_k = 64;

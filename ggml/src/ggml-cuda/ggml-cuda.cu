@@ -1223,9 +1223,11 @@ static size_t ggml_backend_cuda_phase_arena_buffer_type_alloc_size(
 static const ggml_backend_buffer_type_i ggml_backend_cuda_phase_arena_buffer_type_interface = {
     /* .get_name         = */ ggml_backend_cuda_phase_arena_buffer_type_get_name,
     /* .alloc_buffer     = */ ggml_backend_cuda_phase_arena_buffer_type_alloc,
+    /* .alloc_buffer_n   = */ nullptr,
     /* .get_alignment    = */ ggml_backend_cuda_phase_arena_buffer_type_alignment,
     /* .get_max_size     = */ nullptr,
     /* .get_alloc_size   = */ ggml_backend_cuda_phase_arena_buffer_type_alloc_size,
+    /* .get_alloc_size_n = */ nullptr,
     /* .is_host          = */ nullptr,
 };
 
@@ -1830,9 +1832,11 @@ static bool ggml_backend_cuda_kv_stream_buffer_is_host(ggml_backend_buffer_type_
 static const ggml_backend_buffer_type_i ggml_backend_cuda_kv_stream_buffer_type_interface = {
     /* .get_name         = */ ggml_backend_cuda_kv_stream_buffer_type_name,
     /* .alloc_buffer     = */ ggml_backend_cuda_kv_stream_buffer_alloc,
+    /* .alloc_buffer_n   = */ nullptr,
     /* .get_alignment    = */ ggml_backend_cuda_kv_stream_buffer_alignment,
     /* .get_max_size     = */ nullptr,
     /* .get_alloc_size   = */ ggml_backend_cuda_kv_stream_buffer_alloc_size,
+    /* .get_alloc_size_n = */ nullptr,
     /* .is_host          = */ ggml_backend_cuda_kv_stream_buffer_is_host,
 };
 
@@ -3250,7 +3254,7 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
                 // matrix with an odd k reached the kernel and tripped its ncols assert.
                 // Declining here falls through to the sorted-routing path below.
                 if (GGML_CUDA_CC_IS_AMD(cc) &&
-                    ggml_cuda_should_use_mmvf(src0->type, cc, src0->ne, src0->nb, src1->ne[2])) {
+                    ggml_cuda_should_use_mmvf(src0->type, cc, ggml_cuda_info().devices[ctx.device].warp_size, src0->ne, src0->nb, src1->ne[2])) {
                     ggml_cuda_mul_mat_vec_f(ctx, src0, src1, ids, dst);
                     return;
                 }
@@ -7555,6 +7559,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
             return false;
 #else
             return true;
+#endif // GGML_USE_MUSA
         case GGML_OP_DSV4_HC_COMB:
             return op->src[0]->type == GGML_TYPE_F32 && op->src[1]->type == GGML_TYPE_F32 &&
                 op->src[2]->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32;
