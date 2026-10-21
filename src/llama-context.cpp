@@ -188,8 +188,6 @@ static const llm_fused_op_probe llm_fused_op_top_k_mask_probe = {
 llama_context::llama_context(
         const llama_model & model,
               llama_context_params params) :
-
-llama_context::llama_context(const llama_model & model, llama_context_params params) :
     model(model),
     cvec(std::make_unique<llama_adapter_cvec>()),
     loras(std::make_unique<llama_adapter_loras>()),
@@ -1057,6 +1055,7 @@ void llama_context::sched_new(size_t max_nodes, bool parallel) {
 
     ggml_backend_sched_set_copy_callback(sched.get(), sched_copy_experts, this);
     ggml_backend_sched_set_realloc_callback(sched.get(), sched_graph_realloc, this);
+}
 
 static bool llama_model_has_cacheable_moe_weights(const llama_model &                 model,
                                                   llama_moe_cache_mode                mode,
@@ -1331,7 +1330,6 @@ void llama_context::sched_reserve() {
     LLAMA_LOG_INFO("%s: MoE cache requested=%s resolved=%s\n", __func__, moe_cache_requested,
                    moe_cache_eligible ? moe_cache_requested : "off");
 
-    sched.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes,
     sched_new(max_nodes, cparams.pipeline_parallel);
     ggml_backend_sched_set_moe_cache(sched.get(), moe_cache_mode, cparams.moe_cache_budget_mib);
 

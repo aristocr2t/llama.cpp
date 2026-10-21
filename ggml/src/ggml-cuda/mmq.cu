@@ -15,7 +15,7 @@ bool ggml_cuda_mmq_has_config(
     const bool fallback = nrows_x % 128 != 0;
 
     for (int J = 8; J <= 128; J += 8) {
-        const ggml_cuda_mmq_config config = ggml_cuda_mmq_get_config(type, J, fallback, cc);
+        const ggml_cuda_mmq_config config = ggml_cuda_mmq_get_config(type, J, fallback, cc, GGML_PREC_Q8);
         if (config.type != GGML_TYPE_COUNT && mmq_get_nbytes_shared(config, cc) <= smpbo) {
             return true;
         }
@@ -30,7 +30,7 @@ static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, con
             mul_mat_q_case<GGML_TYPE_Q1_0, GGML_PREC_Q8>(ctx, args, stream);
             break;
         case GGML_TYPE_TQ4_1S:
-            mul_mat_q_case<GGML_TYPE_TQ4_1S>(ctx, args, stream);
+            mul_mat_q_case<GGML_TYPE_TQ4_1S, GGML_PREC_Q8>(ctx, args, stream);
             break;
         case GGML_TYPE_Q2_0:
             mul_mat_q_case<GGML_TYPE_Q2_0, GGML_PREC_Q8>(ctx, args, stream);
