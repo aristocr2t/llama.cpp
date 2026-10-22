@@ -1,3 +1,20 @@
+> **Fork note.** This repository is a personal merge of
+> [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) with
+> [TheTom/llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant)
+> (`feature/turboquant-kv-cache`). The TurboQuant implementation and the ~552
+> fork commits are the work of TheTom and the upstream contributors; this fork
+> adds the merge, conflict resolution, and packaging. See
+> [docs/KV-cache-quantization.md](docs/KV-cache-quantization.md) for the
+> TurboQuant KV-cache documentation.
+>
+> Pinned revisions for this merge: upstream `970b51ce7` (2026-10-22), fork
+> `6e09de1b4` (2026-10-21). Branch: `merged`. Merge and packaging:
+> Shamil Sultanov ([@aristocr2t](https://github.com/aristocr2t)). License: MIT
+> (see [LICENSE](LICENSE)). The fork branch has newer commits after
+> `6e09de1b4`; they are intentionally not included in this merge. TurboQuant is
+> not part of upstream llama.cpp and has not been reviewed by the upstream
+> maintainers; validate quality and performance on your own models.
+
 # llama.cpp
 
 ![llama](https://raw.githubusercontent.com/ggml-org/llama.brand/refs/heads/master/cover/llama-cpp/cover-llama-cpp-dark.svg)
