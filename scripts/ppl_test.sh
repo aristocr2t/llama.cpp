@@ -9,18 +9,19 @@
 
 set -euo pipefail
 
-CLI="/mnt/storage/Projects/llama-cpp-turboquant/build/bin/llama-perplexity"
-LIB="/mnt/storage/Projects/llama-cpp-turboquant/build/lib"
+ROOT="${LLAMA_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+CLI="${PPL_CLI:-${ROOT}/build/bin/llama-perplexity}"
+LIB="${PPL_LIB:-${ROOT}/build/bin}"
 export LD_LIBRARY_PATH="${LIB}:${LD_LIBRARY_PATH:-}"
-export CUDA_VISIBLE_DEVICES="0"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
-DATASET="/mnt/storage/blackbeard/wikitext-2-raw/wiki.test.raw"
-OUTDIR="/mnt/storage/Projects/llama-cpp-turboquant/ppl_results"
+DATASET="${PPL_DATASET:?set PPL_DATASET to a plain-text perplexity dataset (for example wiki.test.raw)}"
+OUTDIR="${PPL_OUTDIR:-${ROOT}/ppl_results}"
 mkdir -p "$OUTDIR"
 
-CTX=512
-CHUNKS=1
-THREADS=32
+CTX="${PPL_CTX:-512}"
+CHUNKS="${PPL_CHUNKS:-1}"
+THREADS="${PPL_THREADS:-$(nproc)}"
 
 TS=$(date +%Y%m%d_%H%M%S)
 SUMMARY="${OUTDIR}/ppl_summary_${TS}.tsv"
@@ -44,19 +45,21 @@ run_ppl() {
     echo "  Log: ${logfile}"
     echo "======================================================================"
 
-    # Build env vars from remaining args
+    # Split KEY=value args (environment overrides) from regular CLI args.
     local env_vars=()
     local extra_args=()
     for arg in "$@"; do
         if [[ "$arg" == *=* ]]; then
+            env_vars+=("$arg")
+        else
             extra_args+=("$arg")
         fi
     done
 
-    # Run with any env vars passed as KEY=value before the command
+    # Run with environment overrides and any remaining CLI args.
     env -i PATH="/usr/bin:/bin:/usr/local/bin" \
         LD_LIBRARY_PATH="${LIB}:${LD_LIBRARY_PATH:-}" \
-        CUDA_VISIBLE_DEVICES="0" \
+        CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" \
         OMP_NUM_THREADS="$THREADS" \
         ${env_vars[@]+"${env_vars[@]}"} \
         "$CLI" \
@@ -70,6 +73,7 @@ run_ppl() {
         -ngl 0 \
         -t "$THREADS" \
         -f "$DATASET" \
+        ${extra_args[@]+"${extra_args[@]}"} \
         2>&1 | tee "$logfile"
 
     local rc=${PIPESTATUS[0]}
@@ -105,19 +109,19 @@ run_ppl() {
 # Model definitions
 # ============================================================
 
-MODELS_DIR="/mnt/storage/models/oscar-rotations"
-KW_DIR="/mnt/storage/models/qwen3.6/35B"
+MODELS_DIR="${PPL_MODELS_DIR:?set PPL_MODELS_DIR to the directory containing the OSCAR rotation GGUF models}"
+KW_DIR="${PPL_KW_DIR:-${MODELS_DIR}}"
 
-GEMMA12B="${MODELS_DIR}/gemma-4-12b-it-UD-Q8_K_XL-rot-kv.gguf"
-GEMMA26B="${MODELS_DIR}/gemma-4-26B-A4B-it-UD-Q5_K_S-rot-kv.gguf"
-QWEN27B="${MODELS_DIR}/Qwen3.6-27B-UD-Q5_K_XL-rot-kv.gguf"
-KWAIPLOT="${KW_DIR}/Kwaipilot_KAT-Coder-V2.5-Dev-Q5_K_S.gguf"
+GEMMA12B="${PPL_GEMMA12B:-${MODELS_DIR}/gemma-4-12b-it-UD-Q8_K_XL-rot-kv.gguf}"
+GEMMA26B="${PPL_GEMMA26B:-${MODELS_DIR}/gemma-4-26B-A4B-it-UD-Q5_K_S-rot-kv.gguf}"
+QWEN27B="${PPL_QWEN27B:-${MODELS_DIR}/Qwen3.6-27B-UD-Q5_K_XL-rot-kv.gguf}"
+KWAIPLOT="${PPL_KWAIPLOT:-${KW_DIR}/Kwaipilot_KAT-Coder-V2.5-Dev-Q5_K_S.gguf}"
 
 echo "================================================================="
 echo "  PPL Test Suite Started: $(date)"
 echo "  Dataset: ${DATASET}"
 echo "  Context: ${CTX}, Chunks: ${CHUNKS}, Threads: ${THREADS}"
-echo "  Build: /mnt/storage/Projects/llama-cpp-turboquant"
+echo "  Build: ${ROOT}"
 echo "================================================================="
 
 # ============================================================
