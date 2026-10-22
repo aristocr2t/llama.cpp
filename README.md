@@ -14,6 +14,15 @@
 > `6e09de1b4`; they are intentionally not included in this merge. TurboQuant is
 > not part of upstream llama.cpp and has not been reviewed by the upstream
 > maintainers; validate quality and performance on your own models.
+>
+> **Validation (2026-10-22).** Full build with `-DLLAMA_BUILD_TESTS=ON` passes.
+> `test-turbo-quant` passes and is registered in CTest. End-to-end CPU
+> `llama-bench` with `-ctv turbo4` works. Known pre-existing failures in this
+> fork snapshot (also present before the upstream merge): `test-quantize-fns`
+> reports 8 failures for the 2/3-bit turbo types because its thresholds are
+> calibrated for higher-bit types, and `test-llama-context` reports 10 replay
+> failures on recurrent/MoE models. GPU benchmarks were not run in this
+> environment.
 
 # llama.cpp
 
